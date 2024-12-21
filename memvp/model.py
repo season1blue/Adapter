@@ -251,16 +251,20 @@ class Transformer(nn.Module):
         self.adapter_proj = Projector(1024, params.hidden_proj, params.dim).float()
         self.adapter_modality_embedding=nn.Embedding(2,params.dim).float()
     def forward(self, examples, labels, images=None, half_images=None, prefix_img=None, prefix_nonimg=None, img_indicators=None):
-
+        bsz = examples.shape[0]
+        img_tx_prefix_emb = self.tok_embeddings(prefix_img).unsqueeze(0).expand(bsz, -1, -1) # 将其作为图像的嵌入前缀
+        prefix_len = img_tx_prefix_emb.shape[1]
         image_embeds = self.backbone.encode_image(images).half()
         half_image_embeds = self.backbone.encode_image(half_images).half()
         if isinstance(img_indicators, list):
             img_indicators = torch.Tensor(img_indicators).to(image_embeds.device).long()
-        
+
         image_embeds = self.adapter_proj(image_embeds) * 0.01
         image_embeds = image_embeds * img_indicators.half().view(-1, 1, 1) # 考虑要将这里的图像编码加入到文本输入当中
+        origin_img_embs = image_embeds # 没有拓展到320前
+        img_seq_len = image_embeds.shape[1]
         image_embeds = torch.cat([image_embeds, 
-                                  torch.zeros(image_embeds.size(0), self.adapter_emb1.size(1) - 256,image_embeds.size(2)).half().to(image_embeds.device)],
+                                torch.zeros(image_embeds.size(0), self.adapter_emb1.size(1) - 256,image_embeds.size(2)).half().to(image_embeds.device)],
                                  dim=1)
 
         half_image_embeds = self.adapter_proj(half_image_embeds) * 0.01
@@ -274,8 +278,9 @@ class Transformer(nn.Module):
         examples = self.tok_embeddings(examples) # 文本嵌入: bsz * 512 * 4096
 
         h = examples
+        h = torch.cat([h[:, :1, :], img_tx_prefix_emb, origin_img_embs, h[:, 1:, :]], dim=1) # 将图像的嵌入前缀加入到文本中
 
-        seqlen = (labels > 0).float().nonzero(as_tuple=False)[:, 1].max() + 1 # 返回的是文本idx序列批次中最大非0元素下标, 也就是取最大长度
+        seqlen = (labels > 0).float().nonzero(as_tuple=False)[:, 1].max() + 1 + prefix_len + img_seq_len  # 返回的是文本idx序列批次中最大非0元素下标, 也就是取最大长度
         h = h[:, :seqlen]
         labels = labels[:, :seqlen]
         seqlen = h.size(1)
@@ -328,7 +333,7 @@ class Transformer(nn.Module):
 
         max_prompt_size = max([len(t) for t in prompt_tokens])
         prompt_size = [len(t) for t in prompt_tokens]
-        total_len = min(512, max_gen_len + max_prompt_size)
+        total_len = min(512, max_gen_len + max_prompt_size) #TODO: 要改, 因为训练的时候将输入的文本序列长度修改了
 
         tokens = torch.full((bsz, total_len), 0).cuda().long()
         mask = torch.full((bsz, 1, total_len, total_len), float("-inf"), device=tokens.device)
@@ -339,7 +344,7 @@ class Transformer(nn.Module):
             tokens[k, -len(t) - max_gen_len:- max_gen_len] = torch.tensor(t).long()
             mask[k, :, -len(t) - max_gen_len:, :-len(t) - max_gen_len] = float("-inf")
 
-        token_embeds = self.tok_embeddings(tokens)
+        token_embeds = self.tok_embeddings(tokens) #TODO: 要将图像加入到这里
         indicators = torch.Tensor(indicators).cuda().long()
         image_embeds = image_embeds * indicators.half().view(-1, 1, 1)
         image_embeds = torch.cat([image_embeds, torch.zeros(image_embeds.size(0), self.adapter_emb1.size(1) - 256,
