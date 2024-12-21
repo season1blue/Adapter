@@ -4,6 +4,7 @@
 *.jpg
 *.pyc
 *.ipynb
+*.pth
 # /node_modules/ 表示忽略根目录下的node_modules文件夹
 # node_modules/ 表示忽略所有node_modules文件夹及文件夹下的文件
 # node_modules/* 表示忽略所有node_modules文件夹下的文件, 但是不包括文件夹
@@ -14,4 +15,5 @@ __pycache__
 /output_dir
 /data
 /GQA9M-dual
+/GQA9M-I-dual
 /ckpts

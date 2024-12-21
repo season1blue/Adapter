@@ -312,6 +312,9 @@ class Transformer(nn.Module):
             temperature: float = 0,
             top_p: float = 0.95,
     ):
+        img_ts_sqlen = 256
+        img_prefix_len = 3
+        img_inj_len = img_prefix_len + img_ts_sqlen # 257的注入长度
         bsz = len(prompts)
         params = self.params
         self.eval()
@@ -329,20 +332,24 @@ class Transformer(nn.Module):
         prompt_tokens = []
         for i, x in enumerate(prompts):
             token_idx = tokenizer.encode(x, bos=True, eos=False)
+            # 在这里进行拼接?, 拼接不了, 这里还没有转成向量
             prompt_tokens.append(token_idx)
 
-        max_prompt_size = max([len(t) for t in prompt_tokens])
-        prompt_size = [len(t) for t in prompt_tokens]
+        max_prompt_size = max([len(t) for t in prompt_tokens]) # 获取最大idx序列长度
+        prompt_size = [len(t) for t in prompt_tokens] # 这是各个prompt idx 序列长度 序列
         total_len = min(512, max_gen_len + max_prompt_size) #TODO: 要改, 因为训练的时候将输入的文本序列长度修改了
 
         tokens = torch.full((bsz, total_len), 0).cuda().long()
         mask = torch.full((bsz, 1, total_len, total_len), float("-inf"), device=tokens.device)
-        mask = torch.triu(mask, diagonal=1)
+        mask = torch.triu(mask, diagonal=1) # 上三角部分设置为0
 
         for k, t in enumerate(prompt_tokens):
-            t = t[:total_len - max_gen_len]
-            tokens[k, -len(t) - max_gen_len:- max_gen_len] = torch.tensor(t).long()
-            mask[k, :, -len(t) - max_gen_len:, :-len(t) - max_gen_len] = float("-inf")
+            t = t[:total_len - max_gen_len]# 这一句的作用是砍掉过长的prompt, 如果有prompt特别长, 接近上限了, 那么要往前砍掉一部分, 留maxgen给模型预测, 但是多数情况下是没有用的, 因为prompt长度一般不会太长
+
+            # tokens是tensor, 
+            # len(t)是不行的, 总共输入是要加上图片表征还有prefix的, 总共256 + 3 = 259, 图像都要进去做注意力的
+            tokens[k, -(len(t) + max_gen_len): -max_gen_len] = torch.tensor(t).long()
+            mask[k, :, -(len(t) + max_gen_len):, :-(len(t) + max_gen_len)] = float("-inf") # FIXME: 不知道什么意思, 前面不是定义了吗
 
         token_embeds = self.tok_embeddings(tokens) #TODO: 要将图像加入到这里
         indicators = torch.Tensor(indicators).cuda().long()
@@ -356,12 +363,14 @@ class Transformer(nn.Module):
         
         mask = mask.type_as(token_embeds)
 
-        start_pos = min(max_prompt_size, 512 - max_gen_len)
+        start_pos = min(max_prompt_size, 512 - max_gen_len) # 一般都是max_prompt_size, 意思是? 帅啊
+        # 在-max_gen处相当于划了一条线, 然后prompt部分进行右对齐
         stop_flag = torch.ones([bsz], dtype=torch.long).cuda()
 
-
+        # 看不懂没关系, 把图像加入当成文本处理
         prev_pos = 0
-        for cur_pos in range(start_pos, total_len):
+        for cur_pos in range(start_pos, total_len): # 对长度为max_gen的部分进行生成, 同时还设置了flag数组, 用于检测是不是全部到达了eos
+            # 如果到达了就提前结束, 优化速度, 避免浪费
             h = token_embeds[:, prev_pos:cur_pos]
             
             mask_input = mask[:, :, prev_pos:cur_pos, :cur_pos]
@@ -403,8 +412,8 @@ class Transformer(nn.Module):
         decoded = []
         for i, t in enumerate(tokens.tolist()):
             try:
-                t = t[- max_gen_len:]
-                t = t[: t.index(tokenizer.eos_id)]
+                t = t[-max_gen_len:] # 先取生成部分, 强的, 很有趣, 为了截取答案部分, 文本是右对齐的
+                t = t[: t.index(tokenizer.eos_id)] # 之前已经截取了一次, 已经截取过的部分再截取到eos为止
             except ValueError:
                 pass
             decoded.append(tokenizer.decode(t))
