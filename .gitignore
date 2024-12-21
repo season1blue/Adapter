@@ -1,0 +1,17 @@
+*.log
+*.sh
+*.md
+*.jpg
+*.pyc
+
+# /node_modules/ 表示忽略根目录下的node_modules文件夹
+# node_modules/ 表示忽略所有node_modules文件夹及文件夹下的文件
+# node_modules/* 表示忽略所有node_modules文件夹下的文件, 但是不包括文件夹
+# node_modules 表示忽略所有node_modules文件夹及文件
+
+__pycache__
+.vscode
+/output_dir
+/data
+/GQA9M-dual
+/ckpts
