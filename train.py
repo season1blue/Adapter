@@ -154,8 +154,8 @@ def main(args):
     model = create_model(args)
     model.to(device)
 
-    for name, param in model.named_parameters():
-        print(name, param.dtype)
+    # for name, param in model.named_parameters():
+    #     print(name, param.dtype)
 
     model_without_ddp = model
 

@@ -261,7 +261,9 @@ class Transformer(nn.Module):
 
         image_embeds = self.adapter_proj(image_embeds) * 0.01
         image_embeds = image_embeds * img_indicators.half().view(-1, 1, 1) # 考虑要将这里的图像编码加入到文本输入当中
-        origin_img_embs = image_embeds # 没有拓展到320前
+
+        origin_img_embs = image_embeds # 没有拓展到320前, 经过投影
+        
         img_seq_len = image_embeds.shape[1]
         image_embeds = torch.cat([image_embeds, 
                                 torch.zeros(image_embeds.size(0), self.adapter_emb1.size(1) - 256,image_embeds.size(2)).half().to(image_embeds.device)],
@@ -278,6 +280,8 @@ class Transformer(nn.Module):
         examples = self.tok_embeddings(examples) # 文本嵌入: bsz * 512 * 4096
 
         h = examples
+
+        # 将图像表征 prefix + img_emb 插入到bos 和 Question之间
         h = torch.cat([h[:, :1, :], img_tx_prefix_emb, origin_img_embs, h[:, 1:, :]], dim=1) # 将图像的嵌入前缀加入到文本中
 
         seqlen = (labels > 0).float().nonzero(as_tuple=False)[:, 1].max() + 1 + prefix_len + img_seq_len  # 返回的是文本idx序列批次中最大非0元素下标, 也就是取最大长度
@@ -314,7 +318,7 @@ class Transformer(nn.Module):
     ):
         img_ts_sqlen = 256
         img_prefix_len = 3
-        img_inj_len = img_prefix_len + img_ts_sqlen # 257的注入长度
+        img_inj_len = img_prefix_len + img_ts_sqlen # 259的注入长度
         bsz = len(prompts)
         params = self.params
         self.eval()
@@ -325,6 +329,7 @@ class Transformer(nn.Module):
 
         image_embeds = self.backbone.encode_image(images)
         image_embeds = self.adapter_proj(image_embeds) * 0.01
+        origin_img_embs = image_embeds # 获得这个256长度的图像表征, 后面注入到prompt中
 
         half_image_embeds = self.backbone.encode_image(half_images)
         half_image_embeds = self.adapter_proj(half_image_embeds) * 0.01
@@ -337,21 +342,33 @@ class Transformer(nn.Module):
 
         max_prompt_size = max([len(t) for t in prompt_tokens]) # 获取最大idx序列长度
         prompt_size = [len(t) for t in prompt_tokens] # 这是各个prompt idx 序列长度 序列
-        total_len = min(512, max_gen_len + max_prompt_size) #TODO: 要改, 因为训练的时候将输入的文本序列长度修改了
+        total_len = min(512, max_gen_len + max_prompt_size)
 
-        tokens = torch.full((bsz, total_len), 0).cuda().long()
-        mask = torch.full((bsz, 1, total_len, total_len), float("-inf"), device=tokens.device)
+        tokens = torch.full((bsz, total_len + img_inj_len), 0).cuda().long()
+        mask = torch.full((bsz, 1, total_len + img_inj_len, total_len + img_inj_len), float("-inf"), device=tokens.device)
         mask = torch.triu(mask, diagonal=1) # 上三角部分设置为0
-
+        lenls = [] # 用于记录每一个prompt的长度, 向量化之后用于将img注入进去
         for k, t in enumerate(prompt_tokens):
             t = t[:total_len - max_gen_len]# 这一句的作用是砍掉过长的prompt, 如果有prompt特别长, 接近上限了, 那么要往前砍掉一部分, 留maxgen给模型预测, 但是多数情况下是没有用的, 因为prompt长度一般不会太长
-
+            lenls.append(len(t))
             # tokens是tensor, 
             # len(t)是不行的, 总共输入是要加上图片表征还有prefix的, 总共256 + 3 = 259, 图像都要进去做注意力的
             tokens[k, -(len(t) + max_gen_len): -max_gen_len] = torch.tensor(t).long()
-            mask[k, :, -(len(t) + max_gen_len):, :-(len(t) + max_gen_len)] = float("-inf") # FIXME: 不知道什么意思, 前面不是定义了吗
+            mask[k, :, -(len(t) + max_gen_len + img_inj_len):, :-(len(t) + max_gen_len + img_inj_len)] = float("-inf") # FIXME: 不知道什么意思, 前面不是定义了吗
 
         token_embeds = self.tok_embeddings(tokens) #TODO: 要将图像加入到这里
+        #TODO: 在这里将图像表征加入到每一个文本表征中, 更精确来讲, 应该是覆盖掉0的部分, 以及注意, bos怎么处理
+
+        bos = self.tok_embeddings(torch.tensor(1, device='cuda')) # bos的向量表示
+        img_pre_ts = tokenizer.encode("Image: ", bos=True, eos=False) # 带bos的, 长度是4
+        img_pre_ts = self.tok_embeddings(torch.tensor(img_pre_ts, device='cuda')) # 获取4 * 4096的向量表示
+        for bc_idx , _len in enumerate(lenls):
+            # 覆盖掉 img_inj_len + 1个元素, 因为需要一个bos, 所以是+1
+            token_embeds[bc_idx, -(img_inj_len + _len + max_gen_len):-(_len + max_gen_len - 1)] = torch.cat([img_pre_ts, origin_img_embs[bc_idx]])
+
+
+        # TODO: 在这个Block中写逻辑↑ 往token_emb中注入图像
+
         indicators = torch.Tensor(indicators).cuda().long()
         image_embeds = image_embeds * indicators.half().view(-1, 1, 1)
         image_embeds = torch.cat([image_embeds, torch.zeros(image_embeds.size(0), self.adapter_emb1.size(1) - 256,
@@ -363,7 +380,7 @@ class Transformer(nn.Module):
         
         mask = mask.type_as(token_embeds)
 
-        start_pos = min(max_prompt_size, 512 - max_gen_len) # 一般都是max_prompt_size, 意思是? 帅啊
+        start_pos = min(max_prompt_size + img_inj_len, 512 - max_gen_len) # 一般都是max_prompt_size, 意思是? 帅啊
         # 在-max_gen处相当于划了一条线, 然后prompt部分进行右对齐
         stop_flag = torch.ones([bsz], dtype=torch.long).cuda()
 
