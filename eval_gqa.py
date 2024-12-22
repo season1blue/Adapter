@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from memvp.build import create_model
 import torch
 from dataclasses import dataclass
@@ -36,7 +36,7 @@ args = ModelArgs_7B()
 llama = create_model(args)
 
 
-adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual/checkpoint-2.pth')['model'] #  
+adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual/checkpoint-11.pth')['model'] #  
 
 
 sd = {}
@@ -47,16 +47,15 @@ llama.load_state_dict(sd, False)
 tokenizer = Tokenizer(model_path=os.path.join(args.llama_model_path, 'tokenizer.model'))
 
 
-# data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json'))
-data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/balanced_evalset_list.json')) 
-count = 0
 correct = 0
-total = len(data)
+
 
 class EvalSet(Dataset):
     def __init__(self):
         self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/balanced_evalset_list.json'))
+        # self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json'))
         self.img_root = '/ai/teacher/dkc/Assets/GQA/images'
+
     def __len__(self):
         return len(self.data)
 
@@ -88,7 +87,7 @@ for qs, answsers, imgs, hf_imgs, indicators in tqdm(dataloader):
         count += 1
         if count == 2000:
             flag = True
-        print(f'pred: {pred:<20} gt: {answsers[idx]:<20} {correct:>5}/{count:<5} acc: {float(correct)/count * 100:2.2f}% {total}')
+        print(f'pred: {pred:<20} gt: {answsers[idx]:<20} {correct:>5}/{count:<5} acc: {float(correct)/count * 100:2.2f}% {eval_set.__len__()}')
         if pred == answsers[idx]:
             correct += 1
     if flag:

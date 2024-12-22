@@ -1,1 +1,1 @@
-examples
+print
