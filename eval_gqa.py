@@ -36,7 +36,7 @@ args = ModelArgs_7B()
 llama = create_model(args)
 
 
-adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-dual/GQA9M-dual/checkpoint-0.pth')['model'] #  
+adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual/checkpoint-2.pth')['model'] #  
 
 
 sd = {}
