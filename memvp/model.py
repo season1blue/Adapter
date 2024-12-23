@@ -252,8 +252,10 @@ class Transformer(nn.Module):
         self.adapter_modality_embedding=nn.Embedding(2,params.dim).float()
     def forward(self, examples, labels, images=None, half_images=None, prefix_img=None, prefix_nonimg=None, img_indicators=None):
         bsz = examples.shape[0]
-        img_tx_prefix_emb = self.tok_embeddings(prefix_img).unsqueeze(0).expand(bsz, -1, -1) # 将其作为图像的嵌入前缀
+        img_tx_prefix_emb = self.tok_embeddings(prefix_img).unsqueeze(0).expand(bsz, -1, -1) # 将其作为图像的嵌入前缀, 没有bos的, 长度为3, 有bos的长度是4
         prefix_len = img_tx_prefix_emb.shape[1]
+        img_part_len = prefix_len + 256 # 图像部分的长度
+
         image_embeds = self.backbone.encode_image(images).half()
         half_image_embeds = self.backbone.encode_image(half_images).half()
         if isinstance(img_indicators, list):
@@ -281,16 +283,18 @@ class Transformer(nn.Module):
 
         h = examples
 
-        # 将图像表征 prefix + img_emb 插入到bos 和 Question之间
-        h = torch.cat([h[:, :1, :], img_tx_prefix_emb, origin_img_embs, h[:, 1:, :]], dim=1) # 将图像的嵌入前缀加入到文本中
 
-        seqlen = (labels > 0).float().nonzero(as_tuple=False)[:, 1].max() + 1 + prefix_len + img_seq_len  # 返回的是文本idx序列批次中最大非0元素下标, 也就是取最大长度
-        h = h[:, :seqlen]
-        labels = labels[:, :seqlen]
-        seqlen = h.size(1)
+        seqlen = (labels > 0).float().nonzero(as_tuple=False)[:, 1].max() + 1 # 这里的作用是找 非0元素 最大下标, 不能加图像部分长度, 因为要利用这个长度进行截取
+        h = h[:, :seqlen] # 截取一下掉非0部分, 先对文本部分进行截取, 然后再进行img表征的插入
+        labels = labels[:, :seqlen] # 有必要去除掉非0部分
+        seqlen = h.size(1) # 去除了0元素之后的文本部分长度
+        # 将图像表征 prefix + img_emb 插入到bos 和 Question之间
+        h = torch.cat([h[:, :1, :], img_tx_prefix_emb, origin_img_embs, h[:, 1:, :]], dim=1) # 将图像的嵌入前缀加入到文本中 # 现在总共的长度是259 + seqlen
+        labels = torch.cat([torch.zeros(bsz, img_part_len, device='cuda', dtype=labels.dtype), labels] , dim=1) # 
+        
         freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = freqs_cis[:seqlen]
-        mask = torch.full((1, 1, seqlen, seqlen), float("-inf"), device=h.device)
+        freqs_cis = freqs_cis[:seqlen + img_part_len] # 图像部分也需要位置编码, 所以加上图像部分的长度
+        mask = torch.full((1, 1, seqlen + img_part_len, seqlen + img_part_len), float("-inf"), device=h.device)
         mask = torch.triu(mask, diagonal=0 + 1).type_as(h)
 
         start_pos = 0
@@ -301,7 +305,7 @@ class Transformer(nn.Module):
         output = output[:, :-1, :].reshape(-1, self.vocab_size)
         labels = labels[:, 1:].flatten()
 
-        c_loss = self.criterion(output, labels)
+        c_loss = self.criterion(output, labels) # 对哪一个部分进行
         return c_loss
 
     @torch.inference_mode()
@@ -359,7 +363,6 @@ class Transformer(nn.Module):
         token_embeds = self.tok_embeddings(tokens) #TODO: 要将图像加入到这里
         #TODO: 在这里将图像表征加入到每一个文本表征中, 更精确来讲, 应该是覆盖掉0的部分, 以及注意, bos怎么处理
 
-        bos = self.tok_embeddings(torch.tensor(1, device='cuda')) # bos的向量表示
         img_pre_ts = tokenizer.encode("Image: ", bos=True, eos=False) # 带bos的, 长度是4
         img_pre_ts = self.tok_embeddings(torch.tensor(img_pre_ts, device='cuda')) # 获取4 * 4096的向量表示
         for bc_idx , _len in enumerate(lenls):
@@ -386,7 +389,7 @@ class Transformer(nn.Module):
 
         # 看不懂没关系, 把图像加入当成文本处理
         prev_pos = 0
-        for cur_pos in range(start_pos, total_len): # 对长度为max_gen的部分进行生成, 同时还设置了flag数组, 用于检测是不是全部到达了eos
+        for cur_pos in range(start_pos, total_len + img_inj_len): # 对长度为max_gen的部分进行生成, 同时还设置了flag数组, 用于检测是不是全部到达了eos
             # 如果到达了就提前结束, 优化速度, 避免浪费
             h = token_embeds[:, prev_pos:cur_pos]
             

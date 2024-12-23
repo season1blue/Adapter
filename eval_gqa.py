@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 from memvp.build import create_model
 import torch
 from dataclasses import dataclass
@@ -36,8 +36,7 @@ args = ModelArgs_7B()
 llama = create_model(args)
 
 
-adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual/checkpoint-11.pth')['model'] #  
-
+adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual-v2/checkpoint-12.pth')['model'] #  
 
 sd = {}
 for k in adapter:
@@ -47,13 +46,10 @@ llama.load_state_dict(sd, False)
 tokenizer = Tokenizer(model_path=os.path.join(args.llama_model_path, 'tokenizer.model'))
 
 
-correct = 0
-
-
 class EvalSet(Dataset):
     def __init__(self):
-        self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/balanced_evalset_list.json'))
-        # self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json'))
+        # self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/balanced_evalset_list.json'))
+        self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json'))
         self.img_root = '/ai/teacher/dkc/Assets/GQA/images'
 
     def __len__(self):
@@ -77,19 +73,19 @@ class EvalSet(Dataset):
         return _format_q, answer, img, hf_img, indicator
 
 eval_set = EvalSet()
-dataloader = DataLoader(dataset=eval_set, batch_size=64)
+dataloader = DataLoader(dataset=eval_set, batch_size=16) #NOTE: 这里设置推理的批次大小
 count = 0
 correct = 0
 flag = False
-for qs, answsers, imgs, hf_imgs, indicators in tqdm(dataloader):
+for qs, answsers, imgs, hf_imgs, indicators in dataloader:
     preds = llama.generate(qs, imgs, hf_imgs, indicators, 20, tokenizer)
     for idx, pred in enumerate(preds):
         count += 1
         if count == 2000:
             flag = True
-        print(f'pred: {pred:<20} gt: {answsers[idx]:<20} {correct:>5}/{count:<5} acc: {float(correct)/count * 100:2.2f}% {eval_set.__len__()}')
         if pred == answsers[idx]:
             correct += 1
+        print(f'pred: {pred:<20} gt: {answsers[idx]:<20} {correct:>5}/{count:<5} acc: {float(correct)/count * 100:2.2f}% {eval_set.__len__()}')
     if flag:
         break
     print(f'{correct}/{count}')

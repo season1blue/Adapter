@@ -14,7 +14,7 @@ class GQA(Data.Dataset):
     @dataclass
     class Args:
         # question_file = "/ai/teacher/dkc/Assets/GQA/jsons/balanced_trainset.json" #全量数据集 94W
-        question_file = "/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json" # 2W条
+        question_file = "/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json" # 随机2w条训练
         image_path = "/ai/teacher/dkc/Assets/GQA/images" # 用全局的dataset
         max_words = 512
         max_image_feats = 1
