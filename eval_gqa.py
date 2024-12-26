@@ -36,7 +36,7 @@ args = ModelArgs_7B()
 llama = create_model(args)
 
 
-adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual-v2/checkpoint-12.pth')['model'] #  
+adapter = torch.load('/ai/teacher/dkc/sub/MemVP-G-I-dual/GQA9M-I-dual-v4-9M/checkpoint-0.pth')['model'] #  
 
 sd = {}
 for k in adapter:
@@ -48,8 +48,8 @@ tokenizer = Tokenizer(model_path=os.path.join(args.llama_model_path, 'tokenizer.
 
 class EvalSet(Dataset):
     def __init__(self):
-        # self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/balanced_evalset_list.json'))
-        self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json'))
+        self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/balanced_evalset_list.json'))
+        # self.data = json.load(open('/ai/teacher/dkc/Assets/GQA/jsons/random_20000.json')) # 用于查看在训练集上的输出, 检查错误
         self.img_root = '/ai/teacher/dkc/Assets/GQA/images'
 
     def __len__(self):

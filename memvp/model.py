@@ -383,7 +383,7 @@ class Transformer(nn.Module):
         
         mask = mask.type_as(token_embeds)
 
-        start_pos = min(max_prompt_size + img_inj_len, 512 - max_gen_len) # 一般都是max_prompt_size, 意思是? 帅啊
+        start_pos = min(max_prompt_size + img_inj_len, 512 - max_gen_len) # 一般都是max_prompt_size, 很巧妙的方法
         # 在-max_gen处相当于划了一条线, 然后prompt部分进行右对齐
         stop_flag = torch.ones([bsz], dtype=torch.long).cuda()
 
