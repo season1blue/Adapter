@@ -99,20 +99,25 @@ def create_model(args):
 
 
     set_Llama_Adapter(llama, s=args.adapter_scale, gradient_checkpointing=args.gradient_checkpointing)
-    set_Clip_Adapter(llama.backbone.visual, dim=args.adapter_dim, s=0.1)
+    set_Clip_Adapter(llama.backbone.visual, dim=args.adapter_dim, s=0.1) # 对视觉编码器增加了adapter
 
     learnable_keys = ['adapter']
     total = 0.
     trainable_names = []
+    print('-----------------------------All Keys-----------------------------')
     for name, param in llama.named_parameters():
+        print(f'name: {name}')
         for key in learnable_keys:
             if key in name:
                 param.requires_grad = True
                 param.data = param.data.float()
                 total += param.nelement()
-                trainable_names.append(name)
+                trainable_names.append((name, param.nelement()))
             else:
                 param.requires_grad = False
+    print('-----------------------------Learnable Keys-----------------------------')
+    for i in trainable_names:
+        print(i)
     # print(trainable_names)
     print('  + Number of trainable params: %.2fM' % (total / 1e6))
     return llama

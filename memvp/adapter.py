@@ -21,13 +21,16 @@ class Adapter(nn.Module):
             nn.init.zeros_(self.fc2.weight)
         self.dropout = nn.Dropout(0.1)
 
+
     def forward(self, x, vis_weight):
         with autocast():
             if vis_weight is not None:
+                # memvp会走这里
                 x = x @ (vis_weight[0] + vis_weight[1]).permute(0, 2, 1)
                 x = self.dropout(F.silu(x))
                 x = x @ (vis_weight[0] + vis_weight[2])
             else:
+                # backbone vision会走这里
                 x = self.fc1(x)
                 x = self.dropout(F.gelu(x))
                 x = self.fc2(x)
@@ -39,13 +42,16 @@ def forward_llama(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor
     if self.training and self.gradient_checkpointing:
         h = x + torch.utils.checkpoint.checkpoint(self.attention, self.attention_norm(x), start_pos, freqs_cis, mask)
         h_norm = self.ffn_norm(h)
-        out = h + torch.utils.checkpoint.checkpoint(self.feed_forward, h_norm) + self.adapter_mlp(h_norm, vis_weight) * self.s + self.adapter_mlp(h_norm, half_vis_weight) * self.s
+        out = h + torch.utils.checkpoint.checkpoint(self.feed_forward, h_norm) 
+        + self.adapter_ratio * self.adapter_mlp(h_norm, vis_weight) * self.s 
+        + (1 - self.adapter_ratio) * self.adapter_mlp(h_norm, half_vis_weight) * self.s
     else:
         h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
         out = h + self.drop_path(
             self.feed_forward((self.ffn_norm(h))) 
-            + self.adapter_mlp(self.ffn_norm(h), vis_weight) * self.s
-            + self.adapter_mlp(self.ffn_norm(h), half_vis_weight) * self.s
+            # 高分辨率FFN, 低分辨率FFN, 知识以 self.ratio 与 1 - self.ratio 加入
+            + self.adapter_ratio * self.adapter_mlp(self.ffn_norm(h), vis_weight) * self.s
+            + (1 - self.adapter_ratio) * self.adapter_mlp(self.ffn_norm(h), half_vis_weight) * self.s
             )
     return out
 
@@ -55,11 +61,11 @@ def forward_clip(self, x: torch.Tensor):
     x = x + self.mlp(self.ln_2(x)) + self.adapter_mlp(self.ln_2(x), None) * self.s
     return x
 
-
+# 这里的s应该是超参数, 控制图像FFN加入的比例?
 def set_Llama_Adapter(model, s=1, gradient_checkpointing=False):
     for _ in model.children():
         if type(_) == memvp.model.TransformerBlock:
-            _.adapter_mlp = Adapter(_.dim, hidden_dim=0)
+            _.adapter_mlp = Adapter(_.dim, hidden_dim=0) # hidden_dim设置成为0, 也就不会设置fc1
             _.s = s
             _.gradient_checkpointing = gradient_checkpointing
             bound_method = forward_llama.__get__(_, _.__class__)

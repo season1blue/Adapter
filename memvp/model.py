@@ -83,6 +83,7 @@ class Attention(nn.Module):
             args.n_heads * self.head_dim,
             bias=False
         )
+
         self.wk = Linear(
             args.dim,
             args.n_heads * self.head_dim,
@@ -147,6 +148,25 @@ class Attention(nn.Module):
         return self.wo(output)
 
 
+class ImgAttention(nn.Module):
+    def __init__(self, input_dim=4096, output_dim=512):
+        super(ImgAttention, self).__init__()
+        self.W_q = nn.Linear(input_dim, output_dim, bias=False)
+        self.W_k = nn.Linear(input_dim, output_dim, bias=False)
+        self.W_v = nn.Linear(input_dim, input_dim, bias=False)
+
+    def forward(self, X_compressed, X_original):
+        with autocast():
+            Q = self.W_q(X_compressed)
+            K = self.W_k(X_original)
+            V = self.W_v(X_original)
+            attention_scores = Q @ K.transpose(-2, -1)
+            d_k = Q.size(-1)
+            attention_scores = attention_scores / torch.sqrt(torch.tensor(d_k, dtype=torch.float32))
+            attention_weights = F.softmax(attention_scores, dim=-1)
+            delta = attention_weights @ V
+            return X_compressed + delta
+
 class FeedForward(nn.Module):
     def __init__(
             self,
@@ -186,6 +206,7 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.drop_path = nn.Identity()
+        self.adapter_ratio = nn.Parameter(torch.tensor(0.5))
 
     def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]):
         h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
@@ -250,23 +271,27 @@ class Transformer(nn.Module):
 
         self.adapter_proj = Projector(1024, params.hidden_proj, params.dim).float()
         self.adapter_modality_embedding=nn.Embedding(2,params.dim).float()
+
+        self.adapter_imgatt = ImgAttention() # 增加的模块用adapter前缀命名
+
+
     def forward(self, examples, labels, images=None, half_images=None, prefix_img=None, prefix_nonimg=None, img_indicators=None):
         bsz = examples.shape[0]
+        # "Image: " 编码 -> bos Image : 空格, 四个idx
         img_tx_prefix_emb = self.tok_embeddings(prefix_img).unsqueeze(0).expand(bsz, -1, -1) # 将其作为图像的嵌入前缀, 没有bos的, 长度为3, 有bos的长度是4
-        prefix_len = img_tx_prefix_emb.shape[1]
-        img_part_len = prefix_len + 256 # 图像部分的长度
 
-        image_embeds = self.backbone.encode_image(images).half()
-        half_image_embeds = self.backbone.encode_image(half_images).half()
+        image_embeds = self.backbone.encode_image(images).half() # > (bsz, 256, 1024)
+        half_image_embeds = self.backbone.encode_image(half_images).half() # > (bsz, 256, 1024)
         if isinstance(img_indicators, list):
             img_indicators = torch.Tensor(img_indicators).to(image_embeds.device).long()
 
-        image_embeds = self.adapter_proj(image_embeds) * 0.01
+        image_embeds = self.adapter_proj(image_embeds) * 0.01 # 图像表征升维度 > (bsz, 256, 4096) 
         image_embeds = image_embeds * img_indicators.half().view(-1, 1, 1) # 考虑要将这里的图像编码加入到文本输入当中
 
-        origin_img_embs = image_embeds # 没有拓展到320前, 经过投影
-        
-        img_seq_len = image_embeds.shape[1]
+        origin_img_embs = image_embeds # 没有拓展到320前, 经过投影(256, 4096)
+        compressed_img_embs = aggregate_vit_features(torch.concat([torch.zeros(bsz, 1, origin_img_embs.shape[2], device='cuda', dtype=origin_img_embs.dtype), origin_img_embs], dim=1), level=3)
+        compressed_img_embs = self.adapter_imgatt(compressed_img_embs, origin_img_embs) # (5, 4096) 去和 (256, 4096) att
+
         image_embeds = torch.cat([image_embeds, 
                                 torch.zeros(image_embeds.size(0), self.adapter_emb1.size(1) - 256,image_embeds.size(2)).half().to(image_embeds.device)],
                                  dim=1)
@@ -288,8 +313,11 @@ class Transformer(nn.Module):
         h = h[:, :seqlen] # 截取一下掉非0部分, 先对文本部分进行截取, 然后再进行img表征的插入
         labels = labels[:, :seqlen] # 有必要去除掉非0部分
         seqlen = h.size(1) # 去除了0元素之后的文本部分长度
+        
+        prefix_len = img_tx_prefix_emb.shape[1] # 不带bos的 图像前缀为3
+        img_part_len = prefix_len + compressed_img_embs.shape[1] # 图像部分的长度 3 + 5
         # 将图像表征 prefix + img_emb 插入到bos 和 Question之间
-        h = torch.cat([h[:, :1, :], img_tx_prefix_emb, origin_img_embs, h[:, 1:, :]], dim=1) # 将图像的嵌入前缀加入到文本中 # 现在总共的长度是259 + seqlen
+        h = torch.cat([h[:, :1, :], img_tx_prefix_emb, compressed_img_embs, h[:, 1:, :]], dim=1) # 将图像的嵌入前缀加入到文本中 # 现在总共的长度是259 + seqlen
         labels = torch.cat([torch.zeros(bsz, img_part_len, device='cuda', dtype=labels.dtype), labels] , dim=1) # 
         
         freqs_cis = self.freqs_cis.to(h.device)
@@ -320,9 +348,7 @@ class Transformer(nn.Module):
             temperature: float = 0,
             top_p: float = 0.95,
     ):
-        img_ts_sqlen = 256
         img_prefix_len = 3
-        img_inj_len = img_prefix_len + img_ts_sqlen # 259的注入长度
         bsz = len(prompts)
         params = self.params
         self.eval()
@@ -334,6 +360,10 @@ class Transformer(nn.Module):
         image_embeds = self.backbone.encode_image(images)
         image_embeds = self.adapter_proj(image_embeds) * 0.01
         origin_img_embs = image_embeds # 获得这个256长度的图像表征, 后面注入到prompt中
+        compressed_img_embs = aggregate_vit_features(torch.concat([torch.zeros(bsz, 1, origin_img_embs.shape[2], device='cuda', dtype=origin_img_embs.dtype), origin_img_embs], dim=1), level=3)
+        compressed_img_embs = self.adapter_imgatt(compressed_img_embs, origin_img_embs)
+        img_ts_sqlen = compressed_img_embs.shape[1]
+        img_inj_len = img_prefix_len + img_ts_sqlen # 压缩成为长度5的img表征
 
         half_image_embeds = self.backbone.encode_image(half_images)
         half_image_embeds = self.adapter_proj(half_image_embeds) * 0.01
@@ -346,9 +376,9 @@ class Transformer(nn.Module):
 
         max_prompt_size = max([len(t) for t in prompt_tokens]) # 获取最大idx序列长度
         prompt_size = [len(t) for t in prompt_tokens] # 这是各个prompt idx 序列长度 序列
-        total_len = min(512, max_gen_len + max_prompt_size)
+        total_len = min(512, max_gen_len + max_prompt_size) # 一般是最大生成长度 + 最大prompt长度
 
-        tokens = torch.full((bsz, total_len + img_inj_len), 0).cuda().long()
+        tokens = torch.full((bsz, total_len + img_inj_len), 0).cuda().long() # 要往文本表征中加入图像表征, 所以+img_inj_len
         mask = torch.full((bsz, 1, total_len + img_inj_len, total_len + img_inj_len), float("-inf"), device=tokens.device)
         mask = torch.triu(mask, diagonal=1) # 上三角部分设置为0
         lenls = [] # 用于记录每一个prompt的长度, 向量化之后用于将img注入进去
@@ -356,9 +386,9 @@ class Transformer(nn.Module):
             t = t[:total_len - max_gen_len]# 这一句的作用是砍掉过长的prompt, 如果有prompt特别长, 接近上限了, 那么要往前砍掉一部分, 留maxgen给模型预测, 但是多数情况下是没有用的, 因为prompt长度一般不会太长
             lenls.append(len(t))
             # tokens是tensor, 
-            # len(t)是不行的, 总共输入是要加上图片表征还有prefix的, 总共256 + 3 = 259, 图像都要进去做注意力的
-            tokens[k, -(len(t) + max_gen_len): -max_gen_len] = torch.tensor(t).long()
-            mask[k, :, -(len(t) + max_gen_len + img_inj_len):, :-(len(t) + max_gen_len + img_inj_len)] = float("-inf") # FIXME: 不知道什么意思, 前面不是定义了吗
+            
+            tokens[k, -(len(t) + max_gen_len): -max_gen_len] = torch.tensor(t).long() # 倒着赋值, 留出max_gen_len给预测
+            mask[k, :, -(len(t) + max_gen_len + img_inj_len):, :-(len(t) + max_gen_len + img_inj_len)] = float("-inf") 
 
         token_embeds = self.tok_embeddings(tokens) #TODO: 要将图像加入到这里
         #TODO: 在这里将图像表征加入到每一个文本表征中, 更精确来讲, 应该是覆盖掉0的部分, 以及注意, bos怎么处理
@@ -367,7 +397,7 @@ class Transformer(nn.Module):
         img_pre_ts = self.tok_embeddings(torch.tensor(img_pre_ts, device='cuda')) # 获取4 * 4096的向量表示
         for bc_idx , _len in enumerate(lenls):
             # 覆盖掉 img_inj_len + 1个元素, 因为需要一个bos, 所以是+1
-            token_embeds[bc_idx, -(img_inj_len + _len + max_gen_len):-(_len + max_gen_len - 1)] = torch.cat([img_pre_ts, origin_img_embs[bc_idx]])
+            token_embeds[bc_idx, -(img_inj_len + _len + max_gen_len):-(_len + max_gen_len - 1)] = torch.cat([img_pre_ts, compressed_img_embs[bc_idx]])
 
 
         # TODO: 在这个Block中写逻辑↑ 往token_emb中注入图像
@@ -432,7 +462,7 @@ class Transformer(nn.Module):
         decoded = []
         for i, t in enumerate(tokens.tolist()):
             try:
-                t = t[-max_gen_len:] # 先取生成部分, 强的, 很有趣, 为了截取答案部分, 文本是右对齐的
+                t = t[-max_gen_len:] # 先取生成部分, 强的 为了截取答案部分, 文本是右对齐的
                 t = t[: t.index(tokenizer.eos_id)] # 之前已经截取了一次, 已经截取过的部分再截取到eos为止
             except ValueError:
                 pass
@@ -450,3 +480,49 @@ def sample_top_p(probs, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
+
+
+def aggregate_vit_features(features, level, patch_size=14, image_size=224): # 本项目中使用的图像编码器patch_size是14 * 14
+    """
+    根据小波分解级别合并 ViT 特征。
+    Args:
+        features: [batch_size, num_patches + 1, hidden_size] (ViT 编码特征)
+        level: 小波分解的级别(例如 2 或 3)
+        patch_size: ViT 的 patch 大小(默认 16x16)
+        image_size: 输入图像的大小(默认 224x224)
+    Returns:
+        聚合后的特征，形状为 [batch_size, new_num_patches + 1, hidden_size]
+    """
+    batch_size, num_tokens, hidden_size = features.shape
+    num_patches_per_side = image_size // patch_size  # 每边的 patch 数
+    num_patches = num_patches_per_side ** 2  # Patch 总数量
+
+    # 确保输入特征匹配
+    assert num_tokens == num_patches + 1, "Feature token count mismatch"
+
+    # 提取 patch 特征(去掉 CLS token)
+    cls_token = features[:, 0:1, :]  # [batch_size, 1, hidden_size]
+    patch_tokens = features[:, 1:, :]  # [batch_size, num_patches, hidden_size]
+
+    # 将 patch 特征重塑为 2D 格式
+    patch_tokens_2d = patch_tokens.view(batch_size, num_patches_per_side, num_patches_per_side, hidden_size)
+
+    # 聚合特征，根据小波分解级别动态调整步幅和聚合大小
+    downscale_factor = 2 ** level  # 小波分解的缩放因子
+    num_patches_per_side_new = num_patches_per_side // downscale_factor  # 缩小后的每边 patch 数
+
+    # 确保 downscale_factor 不大于 num_patches_per_side
+    if num_patches_per_side_new < 1:
+        print(f"Warning: downscale_factor ({downscale_factor}) too large. Returning original features.")
+        return features
+
+    # 使用平均池化合并特征
+    aggregated_patches = torch.nn.functional.avg_pool2d(
+        patch_tokens_2d.permute(0, 3, 1, 2),  # 转为 [batch_size, hidden_size, height, width]
+        kernel_size=downscale_factor,
+        stride=downscale_factor
+    ).permute(0, 2, 3, 1).reshape(batch_size, -1, hidden_size)
+
+    # 合并 CLS token 和聚合后的 patch 特征
+    aggregated_features = torch.cat([cls_token, aggregated_patches], dim=1)
+    return aggregated_features

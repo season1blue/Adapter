@@ -294,6 +294,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
             trainable[n] = p.data
     # if loss_scaler is not None:
     checkpoint_paths = [output_dir / ('checkpoint-%s.pth' % epoch_name)]
+    print('--------------------------------------saving params--------------------------------------')
     for checkpoint_path in checkpoint_paths:
         to_save = {
             'model': trainable,

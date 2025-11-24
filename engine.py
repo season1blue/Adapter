@@ -15,7 +15,8 @@ def train_one_epoch(model: torch.nn.Module,
                     epoch: int, 
                     loss_scaler,
                     log_writer=None,
-                    args=None):
+                    args=None,
+                    model_without_ddp=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -40,6 +41,15 @@ def train_one_epoch(model: torch.nn.Module,
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
         device = torch.device("cuda")
+        if data_iter_step % 10000 == 0:
+            print('saving')
+            misc.save_model(
+                args=args, 
+                model=model, 
+                model_without_ddp=model_without_ddp, 
+                optimizer=optimizer,
+                loss_scaler=loss_scaler, 
+                epoch=10000)
 
         examples = examples.to(device)
         labels = labels.to(device)
@@ -48,7 +58,7 @@ def train_one_epoch(model: torch.nn.Module,
         prefix_img = prefix_img.to(device)
         prefix_nonimg = prefix_nonimg.to(device)
         indicators = indicators.to(device)
-        
+
         c_loss = model(examples, labels, images=images, half_images=half_images, prefix_img=prefix_img, prefix_nonimg=prefix_nonimg,
                        img_indicators=indicators)
 
