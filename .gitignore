@@ -1,9 +1,14 @@
+tsbd
 *.log
-./logs
+logs
 ./ckpts/
 *.ipynb
 ./__pycache__/
 *.pyc
 *.pth
 *.txt
-./tsbd/
+
+/output_dir
+/data
+/ckpts
+/weights

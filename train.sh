@@ -1,17 +1,17 @@
 export CUDA_VISIBLE_DEVICES=2
-datasets=(VQAv2 VisWiz)
-model_names=(0_ours 1_zipped 2_full 3_hierachical 4_origin)
+datasets=(GQA)
+model_names=(4_origin)
 for dataset in ${datasets[@]}
 do
     for model_name in ${model_names[@]}
     do
         python train.py \
             --llm_model 7B \
-            --llama_model_path /ai/teacher/dkc/Assets/weights/ \
+            --llama_model_path /ai/teacher/ssz/adapter/weights \
             --max_seq_len 512 \
             --batch_size 8 \
             --accum_iter 1 \
-            --epochs 20 \
+            --epochs 1 \
             --warmup_epochs 2 \
             --blr 9e-3 \
             --weight_decay 0.02 \

@@ -10,6 +10,22 @@ import torch.distributed as dist
 from torch import inf
 import logging
 
+class Evaluator:
+    def __init__(self):
+        pass
+    def evaluate(self, pred, gts):
+        if isinstance(gts, str):
+            for pred_slice in pred.lower().strip().split(' '):
+                if pred_slice in gts.lower().strip().split(' '):
+                    return True
+            return False
+        elif isinstance(gts, list):
+            for ans in gts:
+                for pred_slice in pred.lower().strip().split(' '):
+                    if pred_slice in ans.lower().strip().split(' '):
+                        return True
+            return False
+
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
@@ -170,7 +186,7 @@ def setup_for_distributed(is_master):
             if (len(str(args) + str(kwargs)) > 1):  # print with time stamp
                 builtin_print(*args, **kwargs)
                 try:
-                    logging.info(*args)
+                    logging.info(" ".join(map(str, args)))
                 except Exception as e:
                     logging.warning(str(e))
                     pass

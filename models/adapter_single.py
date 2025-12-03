@@ -72,7 +72,6 @@ def set_Llama_Adapter(model, model_type, s=1, gradient_checkpointing=False):
             setattr(_, 'forward', bound_method)
         elif len(list(_.children())) != 0:
             set_Llama_Adapter(_, model_type, s, gradient_checkpointing=gradient_checkpointing)
-    exit()
 
 def set_Clip_Adapter(model, dim=8, s=0.1):
     for _ in model.children():

@@ -12,6 +12,32 @@ from dataclasses import dataclass
 import cv2
 import pywt
 import numpy as np
+from colorama import Fore
+
+
+def dual_collate_fn(batch):
+    format_qs, answers, imgs, hf_imgs, indicators= [], [], [], [], []
+    for item in batch:
+        _format_q, answer, img, hf_img, indicator= item
+        format_qs.append(_format_q)
+        answers.append(answer)
+        imgs.append(img)
+        indicators.append(indicator)
+        hf_imgs.append(hf_img)
+    imgs = torch.stack(imgs, 0)
+    hf_imgs = torch.stack(hf_imgs, 0)
+    return format_qs, answers, imgs, hf_imgs, indicators
+
+def single_collate_fn(batch):
+    format_qs, answers, imgs, indicators= [], [], [], []
+    for item in batch:
+        _format_q, answer, img, indicator= item
+        format_qs.append(_format_q)
+        answers.append(answer)
+        imgs.append(img)
+        indicators.append(indicator)
+    imgs = torch.stack(imgs, 0)
+    return format_qs, answers, imgs, indicators
 
 class All(Data.Dataset):
     @dataclass
@@ -19,28 +45,42 @@ class All(Data.Dataset):
         assets_path = "/ai/teacher/dkc/HZIP/Assets"
         question_file = ""
         image_path = ""
-        model_path = "/ai/teacher/dkc/Assets/weights" # 要加载tokenizer的
+        model_path = "/ai/teacher/ssz/adapter/weights/" # 要加载tokenizer的
         max_words = 512
         max_image_feats = 1
 
     def __init__(self, dataset_name: str, task: str, mem_type: str):
         super(All, self).__init__()
-        self.dataset_names = ['GQA', 'OKVQA', 'TextVQA', 'VisWiz', 'VQAv2']
-        assert dataset_name in self.dataset_names, f"dataset_name must be one of {self.dataset_names}"
+        self.dataset_names = ['GQA', 'OKVQA', 'TextVQA', 'VisWiz', 'VQAv2', 'GQA-FULL', 'POPE', 'MME', 'VisWiz-Full', 'VQAv2-Full', 'SEED', 'MMBench', 'VCR']
+        assert dataset_name in self.dataset_names, f"{Fore.RED}dataset_name must be one of {self.dataset_names}{Fore.RESET}"
         assert task in ['train', 'val'] , "task must be one of ['train', 'val']"
         assert mem_type in ['dual', 'single']
         
         img_path_map = {
-            'GQA/train': '/ai/teacher/dkc/Assets/GQA/images',
-            'GQA/val': '/ai/teacher/dkc/Assets/GQA/images',
-            'OKVQA/train': '/ai/teacher/dkc/Assets/OKVQA/train2014',
-            'OKVQA/val': '/ai/teacher/dkc/Assets/OKVQA/val2014',
-            'TextVQA/train': '/ai/teacher/dkc/Assets/TextVQA/train_val',
-            'TextVQA/val': '/ai/teacher/dkc/Assets/TextVQA/train_val',
-            'VisWiz/train': '/ai/teacher/dkc/Assets/vizwiz/train',
-            'VisWiz/val': '/ai/teacher/dkc/Assets/vizwiz/val',
-            'VQAv2/train': '/ai/teacher/dkc/Assets/VQAv2/train2014',
-            'VQAv2/val' : '/ai/teacher/dkc/Assets/VQAv2/val2014'
+            'VCR/train'                      : '/ai/teacher/dkc/Assets/Rebuttal/VCR/image',
+            'VCR/val'                        : '/ai/teacher/dkc/Assets/Rebuttal/VCR/image',
+            'MMBench/train'                  : '/ai/teacher/dkc/Assets/Rebuttal/MMBench/image',
+            'MMBench/val'                    : '/ai/teacher/dkc/Assets/Rebuttal/MMBench/image',
+            'VisWiz-Full/train'              : '/ai/teacher/dkc/Assets/vizwiz/train',
+            'VisWiz-Full/val'                : '/ai/teacher/dkc/Assets/vizwiz/val',
+            'POPE/val'                       : '/ai/teacher/dkc/Assets/Rebuttal/POPE/dataset/Full/imgs',
+            'MME/val'                        : '/ai/teacher/dkc/Assets/Rebuttal/MME/data/images',
+            'GQA-FULL/train'                 : '/ai/teacher/dkc/Assets/origin/GQA/images',
+            'GQA-FULL/val'                   : '/ai/teacher/dkc/Assets/origin/GQA/images',
+            'GQA/train'                      : '/ai/teacher/dkc/Assets/origin/GQA/images',
+            'GQA/val'                        : '/ai/teacher/dkc/Assets/origin/GQA/images',
+            'OKVQA/train'                    : '/ai/teacher/dkc/Assets/OKVQA/train2014',
+            'OKVQA/val'                      : '/ai/teacher/dkc/Assets/OKVQA/val2014',
+            'TextVQA/train'                  : '/ai/teacher/dkc/Assets/TextVQA/train_val',
+            'TextVQA/val'                    : '/ai/teacher/dkc/Assets/TextVQA/train_val',
+            'VisWiz/train'                   : '/ai/teacher/dkc/Assets/vizwiz/train',
+            'VisWiz/val'                     : '/ai/teacher/dkc/Assets/vizwiz/val',
+            'VQAv2-Full/train'               : '/ai/teacher/dkc/Assets/VQAv2/train2014',
+            'VQAv2-Full/val'                 : '/ai/teacher/dkc/Assets/VQAv2/val2014',
+            'VQAv2/train'                    : '/ai/teacher/dkc/Assets/VQAv2/train2014',
+            'VQAv2/val'                      : '/ai/teacher/dkc/Assets/VQAv2/val2014',
+            'SEED/train'                     : '/ai/teacher/dkc/Assets/Rebuttal/SEED/dataset/data/image',
+            'SEED/val'                       : '/ai/teacher/dkc/Assets/Rebuttal/SEED/dataset/data/image'
         }
         
         self.args = self.Args
@@ -91,16 +131,16 @@ class All(Data.Dataset):
     def __getitem__(self, idx):
         if self.args.task == 'train':
             item = self.data[idx]
-            question = item['question']
-            imageId = item['image']
-            answer = item['answer']
+            question = item['question']    # 统一了所有数据集格式, 减少修改量, 标准问题, 无论带不带 ? 都可以, 会在
+            imageId:str = item['image']        # 统一了所有数据集格式, 减少修改量, image项统一为不带有后缀的 img 文件名
+            answer = item['answer']        # 统一了所有数据集格式, 减少修改量, 标准答案
 
             prompt_question, prompt_answer = self.build_prompt(question, answer)
             example, labels, example_mask, label_mask = self.tokenize(prompt_question, prompt_answer)
             
             if imageId is not None:
                 indicator = 1
-                image_path = os.path.join(self.args.image_path, f"{imageId}.jpg")
+                image_path = os.path.join(self.args.image_path, f"{imageId}{'' if imageId.endswith('.jpg') else '.jpg'}")
                 image = Image.open(image_path).convert('RGB')
                 image = self.transforms(image)
                 if self.args.mem_type == 'dual':
@@ -115,15 +155,15 @@ class All(Data.Dataset):
 
         elif self.args.task == 'val':
             item = self.data[idx]
-            question = item['question']
+            question:str = item['question']
             imageId = item['image']
             answer = item['answer']
 
-            formatted_question = f"Question: {question}?\nResponse:The answer is"
+            formatted_question = f"Question: {question}{'' if question.endswith('?') else '?'}\nResponse:The answer is"
             
             if imageId is not None:
                 indicator = 1
-                image_path = os.path.join(self.args.image_path, f"{imageId}.jpg")
+                image_path = os.path.join(self.args.image_path, f"{imageId}{'' if imageId.endswith('.jpg') else '.jpg'}")
                 image = Image.open(image_path).convert('RGB')
                 image = self.transforms(image)
                 if self.args.mem_type == 'dual':
@@ -141,6 +181,7 @@ class All(Data.Dataset):
 
     def shuffle_list(self, list):
         random.shuffle(list)
+    
     def low(self, img_path):
         image = cv2.imread(img_path)
         assert image is not None, "Image is None"

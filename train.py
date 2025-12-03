@@ -9,7 +9,7 @@ import random
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
-import timm.optim.optim_factory as optim_factory
+from timm.optim import optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
@@ -19,8 +19,9 @@ from util.datasets import All
 from models.build import create_model
 import warnings
 warnings.filterwarnings("ignore")
-from datetime import datetime
 import logging
+import debugpy
+from colorama import Fore
 
 
 
@@ -115,7 +116,7 @@ def get_args_parser():
     parser.add_argument('--do_pretrain', action='store_true', help='pre-train on large scale vl instruction')
     
     parser.add_argument('--dataset', type=str, required=True)
-    parser.add_argument('--model_name', type=str, required=True, choices=['0_ours', '1_zipped', '2_full', '3_hierachical', '4_origin'])
+    parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--log_dir', type=str, default='./logs/')
 
     return parser
@@ -131,10 +132,10 @@ def main(args):
     cudnn.benchmark = False
     args.is_train = True
 
-    if args.model_name in ['0_ours', '1_zipped', '2_full']:
+    if args.model_name in ['0_ours', '1_zipped', '2_full', '3_hierachical', '3_rebuttal_compress', '3_rebuttal_abstract']:
         dataset_train = All(args.dataset, 'train', 'dual') #NOTE, 在此处, 创建对应的数据集
         args.mem_type = 'dual'
-    elif args.model_name in ['3_hierachical', '4_origin']:
+    elif args.model_name in ['4_origin']:
         dataset_train = All(args.dataset, 'train', 'single')
         args.mem_type = 'single'
     else:
@@ -249,19 +250,29 @@ def main(args):
 
 
 if __name__ == '__main__':
+    # debugpy.configure(subProcess=False)
+    # debugpy.listen(('localhost', 5555))
+    # from time import sleep
+    # for i in range(10):
+    #     if debugpy.is_client_connected():
+    #         print(f'\r{Fore.GREEN}Debugger connected!{Fore.RESET}'.ljust(50))
+    #         break
+    #     else:
+    #         print(f"\rWaiting for debugger attach, {Fore.GREEN}{10 - i} s {Fore.RESET}left".ljust(50), end="")
+    #         sleep(1)
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     if args.log_dir:
         Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-    log_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - [%(levelname)s] - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         filemode='a',
-        filename=f'./{args.log_dir}/{log_time}-Train-{args.dataset}-{args.model_name}.log'
+        filename=f'./{args.log_dir}/{dt}-Train-{args.dataset}-{args.model_name}.log'
     )
     
     main(args)

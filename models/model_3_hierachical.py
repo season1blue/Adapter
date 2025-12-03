@@ -247,9 +247,6 @@ class Transformer(nn.Module):
         self.adapter_emb1 = nn.Parameter(torch.randn(1, params.emb, params.dim) * 0.02)
         self.adapter_emb2 = nn.Parameter(torch.zeros(1, params.emb, params.dim))
 
-        self.half_adapter_emb1 = nn.Parameter(torch.randn(1, params.emb, params.dim) * 0.02)
-        self.half_adapter_emb2 = nn.Parameter(torch.zeros(1, params.emb, params.dim))
-
         self.adapter_proj = Projector(1024, params.hidden_proj, params.dim).float()
         self.adapter_modality_embedding=nn.Embedding(2,params.dim).float()
 
@@ -299,8 +296,8 @@ class Transformer(nn.Module):
         mask = torch.triu(mask, diagonal=0 + 1).type_as(h)
 
         start_pos = 0
-        for layer in self.layers: # 其实就是每一个文本token表征去图像FFN中提取知识, 更新文本表征, 也可以理解为一种注意力机制
-            h = layer(h, start_pos, freqs_cis, mask, [image_embeds, self.adapter_emb1, self.adapter_emb2], [half_image_embeds, self.half_adapter_emb1, self.half_adapter_emb2]) # [图像表征, FFN_p1, FFN_p2]
+        for layer in self.layers:
+            h = layer(h, start_pos, freqs_cis, mask, [image_embeds, self.adapter_emb1, self.adapter_emb2], [half_image_embeds, self.adapter_emb1, self.adapter_emb2])
         h = self.norm(h)
         output = self.output(h) # 从向量转到idx分布
         output = output[:, :-1, :].reshape(-1, self.vocab_size)
@@ -393,7 +390,7 @@ class Transformer(nn.Module):
                     mask_input = torch.triu(mask_input, diagonal=prev_pos + 1).type_as(h)
 
                 for layer in self.layers:
-                    h = layer(h, prev_pos, freqs_cis, mask_input, [image_embeds, self.adapter_emb1, self.adapter_emb2], [half_image_embeds, self.half_adapter_emb1, self.half_adapter_emb2])
+                    h = layer(h, prev_pos, freqs_cis, mask_input, [image_embeds, self.adapter_emb1, self.adapter_emb2], [half_image_embeds, self.adapter_emb1, self.adapter_emb2])
 
                 h = self.norm(h)
                 output = self.output(h[:, -1, :])  # only compute last logits
